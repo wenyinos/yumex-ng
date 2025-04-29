@@ -1,22 +1,22 @@
-from unittest.mock import MagicMock
 import sys
-import pytest
-import gi
+from unittest.mock import MagicMock
 
+import gi
+import pytest
+
+import yumex.utils
 from yumex.utils.enums import (
-    PackageFilter,
-    SearchField,
-    SortType,
     InfoType,
+    PackageFilter,
+    SortType,
 )
 
+from .mock import TemplateUIFromFile, dummy_package
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 
-from gi.repository import Gtk
-from .mock import TemplateUIFromFile, dummy_package
-import yumex.utils
+from gi.repository import Gtk  # noqa: E402
 
 
 def translate(text):
@@ -103,20 +103,20 @@ def test_get_packages_empty(view):
 
 def test_search(view):
     """should get one package and add it to the view storage"""
-    view.search("text", SearchField.NAME)
+    view.search("text")
     assert len(view.storage) == 1
 
 
 def test_search_empty(view):
     """should not find anything"""
     view.presenter.search.return_value = []
-    view.search("text", SearchField.NAME)
+    view.search("text")
     assert len(view.storage) == 0
 
 
 def test_search_2chars(view):
     """should not do a search with less than 3 characters"""
-    view.search("12", SearchField.NAME)
+    view.search("12")
     assert len(view.storage) == 0
 
 

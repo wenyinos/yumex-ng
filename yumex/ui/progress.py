@@ -19,7 +19,7 @@ from yumex.constants import ROOTDIR
 
 
 @Gtk.Template(resource_path=f"{ROOTDIR}/ui/progress.ui")
-class YumexProgress(Adw.Window):
+class YumexProgress(Adw.Dialog):
     __gtype_name__ = "YumexProgress"
 
     title: Gtk.Label = Gtk.Template.Child()
@@ -27,17 +27,23 @@ class YumexProgress(Adw.Window):
     progress: Gtk.ProgressBar = Gtk.Template.Child()
     spinner: Gtk.Spinner = Gtk.Template.Child()
 
-    def __init__(self, **kwargs):
+    def __init__(self, win, **kwargs):
         super().__init__(**kwargs)
+        self._is_shown = False
+        self.win = win
 
     def show(self):
-        self.spinner.set_visible(True)
-        self.present()
+        # self.spinner.set_visible(True)
+        self._is_shown = True
+        self.present(self.win)
 
-    def hide(self):
-        self.close()
-        self.set_title("")
-        self.set_subtitle("")
+    def hide(self, clear: bool = True):
+        if self._is_shown:
+            self._is_shown = False
+            self.close()
+            if clear:
+                self.set_title("")
+                self.set_subtitle("")
 
     def set_title(self, title: str):
         self.title.set_label(title)

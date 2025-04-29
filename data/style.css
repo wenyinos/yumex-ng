@@ -151,3 +151,17 @@ spinner {
     margin-left: 10px;
     margin-right: 10px;
 }
+
+.problems {
+    font-family: monospace;
+    font-size: 0.9em;
+    color: @error_color;
+    padding: 1em;
+}
+
+
+.error_dialog label.body {
+    font-family: monospace;
+    font-size: 1.2em;
+    color: @error_color;
+}

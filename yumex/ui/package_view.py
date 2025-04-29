@@ -16,21 +16,16 @@
 
 import logging
 
-from gi.repository import GObject, Gtk
+from gi.repository import Gio, GObject, Gtk
 
 from yumex.backend.dnf import YumexPackage
 from yumex.backend.interface import Presenter
-from yumex.constants import ROOTDIR
+from yumex.constants import APP_ID, ROOTDIR
 from yumex.ui import get_package_selection_tooltip
 from yumex.ui.dialogs import error_dialog
 from yumex.ui.queue_view import YumexQueueView
 from yumex.utils import RunAsync, timed
-from yumex.utils.enums import (
-    PackageFilter,
-    PackageState,
-    SearchField,
-    SortType,
-)
+from yumex.utils.enums import PackageFilter, PackageState, PackageTodo, SortType
 from yumex.utils.storage import PackageStorage
 
 logger = logging.getLogger(__name__)
@@ -60,6 +55,7 @@ class YumexPackageView(Gtk.ColumnView):
         self.queue_view = qview
         self.sort_attr = SortType.NAME
         self.batch_selection = False
+        self.settings = Gio.Settings(APP_ID)
         self.setup()
 
     def setup(self):
@@ -79,7 +75,8 @@ class YumexPackageView(Gtk.ColumnView):
 
     def refresh(self):
         """refresh the view"""
-        self.selection.selection_changed(0, len(self.store))
+        if len(self.store) > 0:
+            self.selection.selection_changed(0, len(self.store))
 
     def get_packages(self, pkg_filter: PackageFilter):
         """fetch the packages and add them to the store"""
@@ -93,7 +90,8 @@ class YumexPackageView(Gtk.ColumnView):
                 self.presenter.progress.hide()
                 error_dialog(self.get_root(), "Error in loading packages", str(error))
             # refresh the package description for the selected package in the view
-            self.on_selection_changed(self.selection, 0, 0)
+            if len(self.store) > 0:
+                self.on_selection_changed(self.selection, 0, 0)
 
         logger.debug(f"Loading packages : {pkg_filter}")
 
@@ -105,11 +103,11 @@ class YumexPackageView(Gtk.ColumnView):
         RunAsync(self.presenter.get_packages_by_filter, set_completed, pkg_filter)
 
     # @timed
-    def search(self, txt, field=SearchField.NAME):
+    def search(self, txt, options={}):
         """search for packages and add them to store"""
         if len(txt) > 2:
-            logger.debug(f"search packages field:{field} value: {txt}")
-            pkgs = self.presenter.get_packages(self.presenter.search(txt, field=field, limit=1))
+            logger.debug(f"search packages field: value: {txt}")
+            pkgs = self.presenter.get_packages(self.presenter.search(txt, options=options))
             self.add_packages_to_store(pkgs)
 
     @timed
@@ -145,6 +143,8 @@ class YumexPackageView(Gtk.ColumnView):
                 current_styles.append("success")
             case PackageState.UPDATE:
                 current_styles.append("error")
+            case PackageState.DOWNGRADE:
+                current_styles.append("warning")
         widget.set_css_classes(current_styles)
 
     def select_all(self, state: bool):
@@ -175,6 +175,23 @@ class YumexPackageView(Gtk.ColumnView):
             pkg: YumexPackage = self.selection.get_selected_item()
             pkg.queued = not pkg.queued
             self.refresh()
+
+    def on_package_action(self, action):
+        """Handle action from the action bar"""
+        pkg: YumexPackage = self.selection.get_selected_item()
+        logger.debug(f"on_action: {action} on {pkg}")
+        if pkg.is_installed:
+            match action:
+                case "downgrade":
+                    pkg.todo = PackageTodo.DOWNGRADE
+                case "reinstall":
+                    pkg.todo = PackageTodo.REINSTALL
+                case "distrosync":
+                    pkg.todo = PackageTodo.DISTROSYNC
+            self.queue_view.add_package(pkg)
+            self.presenter.show_message(_(f"Package queued for {action}"))
+        else:
+            self.presenter.show_message(_(f"Package must be installed installed for {action}"))
 
     # --------------------- signals --------------------------------
     @GObject.Signal(arg_types=(object,))

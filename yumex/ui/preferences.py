@@ -38,11 +38,13 @@ class YumexPreferences(Adw.PreferencesDialog):
     upd_interval = Gtk.Template.Child()
     upd_show = Gtk.Template.Child()
     upd_notification = Gtk.Template.Child()
+    upd_dark_icon = Gtk.Template.Child()
 
     def __init__(self, presenter, **kwargs):
         super().__init__(**kwargs)
         self.presenter = presenter
         self.settings = Gio.Settings(APP_ID)
+        self._repos = []
         self.connect("unrealize", self.save_settings)
         self.setup_repo()
         self.setup_flatpak()
@@ -50,15 +52,24 @@ class YumexPreferences(Adw.PreferencesDialog):
         self.setup_updater()
         self.updater.set_visible(True)
 
-    def setup_repo(self):
+    def setup_repo(self, show_all=False):
         # get repositories and add them
         repos = self.presenter.get_repositories()
         for id, name, enabled, prio in repos:
+            if not show_all and (id.endswith("-debuginfo") or id.endswith("-source")):
+                continue
             repo_widget = YumexRepository()
             repo_widget.set_title(id)
             repo_widget.set_subtitle(f"{name}( {prio})")
             repo_widget.enabled.set_state(enabled)
             self.repo_group.add(repo_widget)
+            self._repos.append(repo_widget)
+
+    def clear_repo(self):
+        """clear all repositories"""
+        for repo in self._repos:
+            self.repo_group.remove(repo)
+        self._repos = []
 
     def setup_updater(self):
         self.upd_custom.set_text(self.settings.get_string("upd-custom"))
@@ -67,6 +78,8 @@ class YumexPreferences(Adw.PreferencesDialog):
         self.upd_show.set_state(self.settings.get_boolean("upd-show-icon"))
         self.upd_notification.set_active(self.settings.get_boolean("upd-notification"))
         self.upd_notification.set_state(self.settings.get_boolean("upd-notification"))
+        self.upd_dark_icon.set_active(self.settings.get_boolean("upd-dark-icon"))
+        self.upd_dark_icon.set_state(self.settings.get_boolean("upd-dark-icon"))
 
     def setup_metadata(self):
         period = self.settings.get_int("meta-load-periode")
@@ -116,6 +129,7 @@ class YumexPreferences(Adw.PreferencesDialog):
             pass
         self.settings.set_boolean("upd-show-icon", self.upd_show.get_state())
         self.settings.set_boolean("upd-notification", self.upd_notification.get_state())
+        self.settings.set_boolean("upd-dark-icon", self.upd_dark_icon.get_state())
         return location, remote
 
     def update_remote(self, current_location) -> str | None:
@@ -153,6 +167,13 @@ class YumexPreferences(Adw.PreferencesDialog):
         """capture the Notify for the selected property is changed"""
         location = FlatpakLocation(self.fp_location.get_selected_item().get_string())
         self.update_remote(location)
+
+    @Gtk.Template.Callback()
+    def on_repo_source_debuginfo(self, widget, data):
+        """repo_source_debuginfo callback"""
+        logger.debug(f"on_repo_source_debuginfo {widget.get_state()}")
+        self.clear_repo()
+        self.setup_repo(show_all=not widget.get_state())
 
 
 @Gtk.Template(resource_path=f"{ROOTDIR}/ui/repository.ui")

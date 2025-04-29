@@ -19,7 +19,6 @@
 
 import argparse
 import logging
-import subprocess
 import sys
 from pathlib import Path
 from traceback import format_exception
@@ -76,29 +75,32 @@ class YumexApplication(Adw.Application):
 
         # create app actions
         self.create_action("about", self.on_about)
-        self.create_action("expire-cache", self.win.on_actions)
+        self.create_action("adv-actions", self.win.action_dispatch)
         self.create_action("preferences", self.on_preferences, ["<Ctrl>comma"])
 
         # windows related actions
-        self.create_action("select_all", self.win.on_actions, ["<Ctrl>A"])
-        self.create_action("deselect_all", self.win.on_actions, ["<Shift><Ctrl>A"])
-        self.create_action("sidebar", self.win.on_actions, ["F9"])
-        self.create_action("clear_queue", self.win.on_actions)
-        self.create_action("filter_installed", self.win.on_actions, ["<Alt>I"])
-        self.create_action("filter_updates", self.win.on_actions, ["<Alt>U"])
-        self.create_action("filter_available", self.win.on_actions, ["<Alt>A"])
-        self.create_action("toggle_selection", self.win.on_actions, ["<Ctrl>space"])
+        self.create_action("select_all", self.win.action_dispatch, ["<Ctrl>A"])
+        self.create_action("deselect_all", self.win.action_dispatch, ["<Shift><Ctrl>A"])
+        self.create_action("sidebar", self.win.action_dispatch, ["F9"])
+        self.create_action("clear_queue", self.win.action_dispatch)
+        self.create_action("filter_installed", self.win.action_dispatch, ["<Alt>I"])
+        self.create_action("filter_updates", self.win.action_dispatch, ["<Alt>U"])
+        self.create_action("filter_available", self.win.action_dispatch, ["<Alt>A"])
+        self.create_action("toggle_selection", self.win.action_dispatch, ["<Ctrl>space"])
         self.create_action("filter_search", None)
-        self.create_action("flatpak_update", self.win.on_actions)
-        self.create_action("flatpak_search", self.win.on_actions, ["<Ctrl>S"])
-        self.create_action("flatpak_remove", self.win.on_actions, ["Delete"])
-        self.create_action("flatpak_runtime", self.win.on_actions)
-        self.create_action("flatpak_remove_unused", self.win.on_actions)
+        self.create_action("flatpak_update", self.win.action_dispatch)
+        self.create_action("flatpak_search", self.win.action_dispatch, ["<Ctrl>S"])
+        self.create_action("flatpak_remove", self.win.action_dispatch, ["Delete"])
+        self.create_action("flatpak_runtime", self.win.action_dispatch)
+        self.create_action("flatpak_remove_unused", self.win.action_dispatch)
 
-        self.create_action("apply_actions", self.win.on_actions, ["<Ctrl>Return"])
-        self.create_action("page_one", self.win.on_actions, ["<Alt>1"])
-        self.create_action("page_two", self.win.on_actions, ["<Alt>2"])
-        self.create_action("page_three", self.win.on_actions, ["<Alt>3"])
+        self.create_action("apply_actions", self.win.action_dispatch, ["<Ctrl>Return"])
+        self.create_action("page_one", self.win.action_dispatch, ["<Alt>1"])
+        self.create_action("page_two", self.win.action_dispatch, ["<Alt>2"])
+        self.create_action("page_three", self.win.action_dispatch, ["<Alt>3"])
+        self.create_action("downgrade", self.win.action_dispatch)
+        self.create_action("reinstall", self.win.action_dispatch)
+        self.create_action("distrosync", self.win.action_dispatch)
 
         # call a test function to test gui code, should not be enabled, if not testing
         if BUILD_TYPE == "debug" or self.args.debug:
@@ -108,6 +110,8 @@ class YumexApplication(Adw.Application):
         # click the Availble package filter, without looking the UI
         if self.args.flatpakref:
             self.win.install_flatpakref(self.args.flatpakref)
+        elif self.args.rpmfile:
+            self.win.install_rpmfile(self.args.rpmfile)
         elif self.args.update:
             self.win.load_packages("updates")
         elif self.args.flatpak:
@@ -118,17 +122,11 @@ class YumexApplication(Adw.Application):
     def do_command_line(self, args) -> Literal[0]:
         parser = argparse.ArgumentParser(prog="yumex", description="Yum Extender package management application")
         parser.add_argument("-d", "--debug", help="enable debug logging", action="store_true")
-        parser.add_argument("--exit", help="stop the dnfdaemon system daemon", action="store_true")
         parser.add_argument("--update", help="start on update page", action="store_true")
         parser.add_argument("--flatpakref", help="Install flatpak from a .flatpakref")
+        parser.add_argument("--rpmfile", help="Install a .rpm file")
         parser.add_argument("--flatpak", help="start on flatpak page", action="store_true")
         self.args = parser.parse_args(args.get_arguments()[1:])
-        if self.args.exit:
-            subprocess.call(
-                "/usr/bin/dbus-send --system --print-reply --dest=org.baseurl.DnfSystem / org.baseurl.DnfSystem.Exit",
-                shell=True,
-            )
-            return 0
         setup_logging(debug=self.args.debug)
         global is_local
         logger.debug(f"Version:  {VERSION} ({BACKEND})")
@@ -170,25 +168,16 @@ class YumexApplication(Adw.Application):
             license_type=Gtk.License.GPL_3_0,
             version=f"{VERSION} ({BACKEND})",
             release_notes_version=VERSION,
-            release_notes=_(
-                """
-        <ul>
-          <li>Backend resign to use Dnf5Daemon for all actions</li>
-          <li>DNF4 is no longer supported</li>
-          <li>lot of code fixes and optimization</li>
-        </ul>
-"""
-            ),
-            comments=_(
-                """
-Yum Extender is a Package management to install, update and remove packages
-"""
-            ),
+            release_notes="""
+            <ul>
+                <li>Added support for offline transaction during boot</li>
+                <li>Added support of reinstall, downgrade,distro-sync</li>
+                <li>Added support for system upgrade to next Fedora release</li>
+                <li>Added support for installing .rpm files from file manager</li>
+            </ul>
+            """,
+            comments=_("Yum Extender is a Package management to install, update and remove packages"),
         )
-        # about.add_credit_section(
-        #     _("Section title"),
-        #     ["Somebody https://yumex.dk"],
-        # )
         about.add_acknowledgement_section(
             _("Special thanks to"),
             ["Thomas Crider https://github.com/GloriousEggroll"],
@@ -217,6 +206,7 @@ Yum Extender is a Package management to install, update and remove packages
         tb_file.parent.mkdir(exist_ok=True)
         tb_file.write_text(msg)
         logger.debug(f"traceback written to {tb_file}")
+        self.win.progress.hide()
         if exc_type == YumexException:
             error_dialog(self.win, title=_("Critical Error"), msg=exc_value.msg)
         else:

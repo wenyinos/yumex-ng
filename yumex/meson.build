@@ -52,6 +52,8 @@ yumex_ui_modules = [
     'ui/queue_view.py',
     'ui/transaction_result.py',
     'ui/window.py',
+    'ui/search_settings.py',
+    'ui/advanced_actions.py',
 ]
 PY_INSTALLDIR.install_sources(yumex_ui_modules, subdir: 'yumex/ui')
 

@@ -11,19 +11,19 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #
-# Copyright (C) 2024 Tim Lauridsen
+# Copyright (C) 2025 Tim Lauridsen
 
 import logging
-import re
 from pathlib import Path
 
 from gi.repository import Adw, Gio, Gtk  # type: ignore
 
 from yumex.backend import TransactionResult
-from yumex.backend.dnf import YumexPackage
+from yumex.backend.dnf import TransactionOptions, YumexPackage
 from yumex.backend.presenter import YumexPresenter
 from yumex.constants import APP_ID, PACKAGE_COLUMNS, ROOTDIR
-from yumex.ui.dialogs import GPGDialog
+from yumex.ui.advanced_actions import YumexAdvancedActions
+from yumex.ui.dialogs import GPGDialog, YesNoDialog
 from yumex.ui.flatpak_result import YumexFlatpakResult
 from yumex.ui.flatpak_view import YumexFlatpakView
 from yumex.ui.package_info import YumexPackageInfo
@@ -31,9 +31,10 @@ from yumex.ui.package_settings import YumexPackageSettings
 from yumex.ui.package_view import YumexPackageView
 from yumex.ui.progress import YumexProgress
 from yumex.ui.queue_view import YumexQueueView
+from yumex.ui.search_settings import YumexSearchSettings
 from yumex.ui.transaction_result import YumexTransactionResult
-from yumex.utils import BUILD_TYPE, RunAsync
-from yumex.utils.enums import InfoType, PackageFilter, Page, SearchField, SortType
+from yumex.utils import BUILD_TYPE, RunAsync, get_distro_release
+from yumex.utils.enums import InfoType, PackageFilter, Page, SortType, TransactionCommand
 from yumex.utils.updater import sync_updates
 
 logger = logging.getLogger(__name__)
@@ -64,23 +65,30 @@ class YumexMainWindow(Adw.ApplicationWindow):
     queue_page = Gtk.Template.Child()
     flatpaks_page = Gtk.Template.Child()
     flatpak_update_all: Gtk.Button = Gtk.Template.Child()
+    package_menu = Gtk.Template.Child()
+    package_action_button = Gtk.Template.Child()
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.app = kwargs["application"]
         self.settings = Gio.Settings(APP_ID)
+        self.search_settings = YumexSearchSettings()
         self.current_pkg_filer = None
         self.previuos_pkg_filer = None
         self._last_selected_pkg: YumexPackage = None
         self.info_type: InfoType = InfoType.DESCRIPTION
         self._last_filter: PackageFilter | None = None
         self._resetting = False
+        self.search_bar.connect_entry(self.search_entry)
 
         # save settings on windows close
         self.connect("unrealize", self.on_window_close)
         # connect to changes on Adw.ViewStack
         self.stack.get_pages().connect("selection-changed", self.on_stack_changed)
         self.presenter = YumexPresenter(self)
+        # Setup Advanced actions dialog
+        self.advanced_actions = YumexAdvancedActions(self)
+        self.advanced_actions.connect("action", self.on_advanced_actions)
         self.setup_gui()
 
     @property
@@ -111,10 +119,13 @@ class YumexMainWindow(Adw.ApplicationWindow):
         if BUILD_TYPE == "debug":
             self.add_css_class("devel")
 
-        self.progress = YumexProgress()
-        self.progress.set_transient_for(self)
+        self.progress = YumexProgress(self)
         self.setup_packages_and_queue()
         self.setup_flatpaks()
+        self.popover = Gtk.PopoverMenu()
+        self.popover.set_menu_model(self.package_menu)
+        self.popover.set_has_arrow(False)
+        self.popover.set_parent(self)
 
     def setup_flatpaks(self):
         self.flatpak_view = YumexFlatpakView(self.presenter)
@@ -172,6 +183,24 @@ class YumexMainWindow(Adw.ApplicationWindow):
         ref_file = Path(flatpakref)
         self.flatpak_view.install_flatpakref(ref_file)
 
+    def install_rpmfile(self, rpmfile):
+        logger.debug(f"install rpmfile: {rpmfile}")
+        self.select_page(Page.PACKAGES)
+        inst_file = Path(rpmfile).absolute()
+
+        if not inst_file.exists():
+            logger.debug(f"install rpmfile: {inst_file} not found")
+            self.show_message(_(f"RPM file not found : {inst_file}"))
+            return
+        logger.debug(f"Execute the transaction on {inst_file}")
+        opts = TransactionOptions(command=TransactionCommand.IS_FILE)
+        result = self._do_transaction([inst_file.as_posix()], opts)
+        logger.debug(f"Transaction execution ended : {result}")
+        if result:  # transaction completed without issues\
+            self.show_message(_("Transaction completed succesfully"), timeout=3)
+            # reset everything
+            self.reset_all()
+
     def show_flatpak_view(self):
         self.load_packages("installed")
         self.select_page(Page.FLATPAKS)
@@ -184,30 +213,39 @@ class YumexMainWindow(Adw.ApplicationWindow):
         """Set the sesitivity of the package view"""
         self.main_view.set_sensitive(sensitive)
 
-    def _do_transaction(self, queued):
+    def _do_transaction(self, queued, opts: TransactionOptions):
         """execute the transaction with the root backend."""
         self.progress.show()
         self.progress.set_title(_("Building Transaction"))
         backend = self.presenter.package_backend
         # build the transaction
-        result: TransactionResult = backend.build_transaction(queued)
+        result: TransactionResult = backend.build_transaction(queued, opts)
         self.progress.hide()
         if result.completed:
             # get confirmation
             transaction_result = YumexTransactionResult()
+            if opts.offline:  # force offline transaction
+                transaction_result.set_offline(True)
             transaction_result.show_result(result.data)
             if result.problems:
                 transaction_result.set_problems(result.problems)
+            if not result.data and not result.problems:
+                transaction_result.show_errors(_("Nothing to do in this transaction"))
             transaction_result.show(self)
+            if transaction_result.is_offline:
+                opts.offline = True
             if transaction_result.confirm:
                 # run the transaction
                 while True:
                     self.progress.show()
-                    self.progress.set_title(_("Running Transaction"))
-                    result: TransactionResult = backend.run_transaction()
+                    if opts.offline:
+                        self.progress.set_title(_("Building Offline Transaction"))
+                    else:
+                        self.progress.set_title(_("Running Transaction"))
+                    result: TransactionResult = backend.run_transaction(opts)
                     if result.completed:
                         return True
-                    if result.key_install and result.key_values:  # Only on DNF4
+                    if result.key_install and result.key_values:
                         self.progress.hide()
                         ok = self.confirm_gpg_import(result.key_values)
                         if ok:
@@ -215,19 +253,23 @@ class YumexMainWindow(Adw.ApplicationWindow):
                             # tell the backend to import this gpg key in next run
                             backend.do_gpg_import()
                             # rebuild the transaction again, before re-run
-                            backend.build_transaction(queued)
+                            backend.build_transaction(queued, opts)
                             continue
                         else:
                             return True
                     else:
                         break
         if result.error:
-            self.show_message(result.error)
+            self.progress.hide()
+            transaction_result = YumexTransactionResult()
+            transaction_result.show_errors(result.error)
+            transaction_result.show(self)
+
+            # self.show_message(result.error)
         return False
 
     def confirm_gpg_import(self, key_values):
         dialog = GPGDialog(self, key_values)
-        dialog.set_transient_for(self)
         dialog.show()
         logger.debug(f"Install key: {dialog.install_key}")
         return dialog.install_key
@@ -281,23 +323,26 @@ class YumexMainWindow(Adw.ApplicationWindow):
         self.package_settings.on_package_filter_activated(button)
 
     def on_package_selection_changed(self, widget, pkg: YumexPackage):
-        logger.debug(f"Window: package selection changed : {pkg}")
-        self.set_pkg_info(pkg)
+        if pkg:
+            logger.debug(f"Window: package selection changed : {pkg}")
+            self.set_pkg_info(pkg)
 
     def on_testing(self, *args):
         """Used to test gui stuff <Shift><Ctrl>T to activate"""
-        self.presenter.package_backend.client._test_exception()
+        print(1 / 0)
 
     def on_apply_actions_clicked(self, *_args):
         """handler for the apply button"""
 
         if queued := self.queue_view.get_queued():
             logger.debug(f"Execute the transaction on {len(queued)} packages")
-            result = self._do_transaction(queued)
+            opts = TransactionOptions()
+            result = self._do_transaction(queued, opts)
             logger.debug(f"Transaction execution ended : {result}")
             if result:  # transaction completed without issues\
                 self.show_message(_("Transaction completed succesfully"), timeout=3)
-
+                if opts.offline:
+                    self.on_action_reboot()
                 # reset everything
                 self.reset_all()
 
@@ -311,15 +356,12 @@ class YumexMainWindow(Adw.ApplicationWindow):
         self.load_packages(PackageFilter.INSTALLED)
         self._resetting = False
 
-    def do_search(self, text, field=None):
+    def do_search(self, text):
         # remove selection in package filter (sidebar)
         if not self._last_filter:
             self._last_filter = self.package_settings.current_pkg_filter
         self.package_settings.unselect_all()
-        if field:
-            self.package_view.search(text, field=field)
-        else:
-            self.package_view.search(text)
+        self.package_view.search(text, options=self.search_settings.options)
 
     def reset_search(self):
         # if self.package_settings.current_pkg_filter == PackageFilter.SEARCH:
@@ -335,37 +377,27 @@ class YumexMainWindow(Adw.ApplicationWindow):
         logger.debug(f"search changed : {search_txt}")
         if search_txt == "" and not self._resetting:
             self.reset_search()
-        elif search_txt and search_txt[0] != ".":
+        elif search_txt != "":
             self.do_search(search_txt)
         return True
 
     @Gtk.Template.Callback()
     def on_search_activate(self, widget):
         """handler for enter pressed in the seach entry"""
-        allowed_field_map = {
-            "name": SearchField.NAME,
-            "arch": SearchField.ARCH,
-            "repo": SearchField.REPO,
-            "desc": SearchField.SUMMARY,
-        }
         search_txt = widget.get_text()
         logger.debug(f"search activate : {search_txt}")
         if search_txt == "":
             self.reset_search()
-        elif search_txt[0] == ".":
-            # syntax: .<field>=<value>
-            cmds = re.compile(r"^\.(.*)=(.*)")
-            res = cmds.match(search_txt)
-            if len(res.groups()) == 2:
-                field, key = res.groups()
-                if field in allowed_field_map:
-                    field = allowed_field_map[field]
-                    self.package_settings.unselect_all()
-                    logger.debug(f"searching for : {key} in pkg.{field}")
-                    self.do_search(key, field=field)  # search by field
         else:
             self.do_search(search_txt)
         return True
+
+    @Gtk.Template.Callback()
+    def on_search_settings(self, widget):
+        options = self.search_settings.show(self)
+        logger.debug(f"search settings : {options}")
+        self.search_entry.grab_focus()
+        self.on_search_activate(self.search_entry)
 
     def on_selectall_activate(self):
         """handler for select all on selection column right click menu"""
@@ -401,8 +433,9 @@ class YumexMainWindow(Adw.ApplicationWindow):
         self.search_button.set_sensitive(visible)
         self.search_bar.set_visible(visible)
         self.sidebar_button.set_sensitive(visible)
+        self.package_action_button.set_sensitive(visible)
 
-    def on_actions(self, action, *args):
+    def action_dispatch(self, action, *args):
         """Generic action dispatcher"""
         match action.get_name():
             case "page_one":
@@ -457,14 +490,98 @@ class YumexMainWindow(Adw.ApplicationWindow):
             case "toggle_selection":
                 if self.active_page == Page.PACKAGES:
                     self.package_view.toggle_selected()
-            case "expire-cache":
-                logger.debug("expire-cache")
-                res, msg = self.presenter.package_backend.client.clean("expire-cache")
-                if res:
-                    self.reset_all()
+            case "adv-actions":
+                logger.debug("advanced actions")
+                action = self.advanced_actions.show(self)
+            case "downgrade" | "reinstall" | "distrosync":
+                self.package_view.on_package_action(action.get_name())
             case other:
                 logger.debug(f"ERROR: action: {other} not defined")
                 raise ValueError(f"action: {other} not defined")
+
+    def on_advanced_actions(self, widget, action, parameter):
+        """handler for advanced actions"""
+        logger.debug(f"advanced action: {action} parameter: {parameter}")
+        match action:
+            case "refresh-cache":
+                self.on_action_expire_cache()
+            case "system-upgrade":
+                self.on_action_system_upgrade(parameter)
+            case "cancel-system-upgrade":
+                self.on_action_cancel_system_upgrade(parameter)
+            case "reboot":
+                self.on_action_reboot()
+            case "distro-sync-system":
+                self.on_action_distro_sync_system()
+            case _:
+                logger.debug(f"ERROR: action: {action} not defined")
+
+    def on_action_reboot(self):
+        """handler for reboot action"""
+        self.progress.hide()
+        logger.debug("offline transaction on reboot prepare")
+        title = _("Offline transaction")
+        msg = _("Do you want to prepare the offline transaction to be applied on next reboot ?")
+        dialog = YesNoDialog(self, msg, title)
+        dialog.show()
+        if dialog.answer:
+            rc = self.presenter.reboot_and_install()
+            if rc:
+                msg = _("Offline trasaction prepared to be applied on next reboot")
+                self.show_message(msg)
+            else:
+                msg = _("Offline transaction prepare failed")
+                self.show_message(msg)
+
+    def on_action_expire_cache(self):
+        def callback(*args):
+            res, error = args[0]
+            logger.debug(f"expire-cache: {res} : {error}")
+
+            if res:
+                self.reset_all()
+
+        RunAsync(self.presenter.package_backend.client.clean, callback, "expire-cache")
+
+    def on_action_system_upgrade(self, releasever):
+        """handler for distro-sync action"""
+        logger.debug(f"Execute system upgrade ({releasever})")
+        current_release = get_distro_release()
+        if releasever <= current_release:
+            self.show_message(_("system upgrade target release must to larger than current release"))
+            return
+        opts = TransactionOptions(command=TransactionCommand.SYSTEM_UPGRADE, parameter=releasever, offline=True)
+        result = self._do_transaction([], opts)
+        logger.debug(f"Transaction execution ended : {result}")
+        # we have to reset the backend to current releasever
+        self.presenter.package_backend.reopen_session()
+        self.progress.hide
+        if result:  # transaction completed without issues\
+            self.show_message(_("Offline Transaction completed succesfully"), timeout=3)
+            self.on_action_reboot()
+            # reset everything
+            self.reset_all()
+
+    def on_action_distro_sync_system(self):
+        """handler for distro-sync action"""
+        logger.debug("Execute distro-sync")
+        opts = TransactionOptions(command=TransactionCommand.SYSTEM_DISTRO_SYNC)
+        result = self._do_transaction([], opts)
+        logger.debug(f"Transaction execution ended : {result}")
+        if result:
+            self.show_message(_("Distro-Sync completed succesfully"), timeout=3)
+            # reset everything
+            self.reset_all()
+
+    def on_action_cancel_system_upgrade(self, releasever):
+        """handler for offline transaction cancel action"""
+        logger.debug(f"cancel offline transaction ({releasever})")
+        res, errors = self.presenter.cancel_offline_transaction()
+        if res:
+            self.show_message(_("Offline transaction cancelled"), timeout=5)
+        else:
+            logger.debug(f"cancel offline transaction failed: {errors}")
+            self.show_message(_("Offline transaction cancel failed"), timeout=5)
 
     def on_stack_changed(self, widget, position, n_items):
         """handler for stack page is changed"""

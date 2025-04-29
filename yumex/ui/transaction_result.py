@@ -13,23 +13,31 @@
 #
 # Copyright (C) 2024 Tim Lauridsen
 
+import html
+import logging
+
 from gi.repository import Adw, Gio, GLib, GObject, Gtk  # type: ignore
 
 from yumex.constants import ROOTDIR
 from yumex.utils import format_number
+
+logger = logging.getLogger(__name__)
 
 
 @Gtk.Template(resource_path=f"{ROOTDIR}/ui/transaction_result.ui")
 class YumexTransactionResult(Adw.Dialog):
     __gtype_name__ = "YumexTransactionResult"
 
+    result_frame = Gtk.Template.Child()
     result_view = Gtk.Template.Child()
     selection = Gtk.Template.Child()
     result_factory = Gtk.Template.Child()
     prob_grp = Gtk.Template.Child()
-    problems = Gtk.Template.Child()
+    problems: Gtk.Label = Gtk.Template.Child()
     confirm_button = Gtk.Template.Child("confirm")
     cancel_button = Gtk.Template.Child("cancel")
+    copy_button = Gtk.Template.Child("copy")
+    offline: Adw.SwitchRow = Gtk.Template.Child()
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -39,18 +47,42 @@ class YumexTransactionResult(Adw.Dialog):
         model = Gtk.TreeListModel.new(self.store, False, True, self.add_tree_node)
         self.selection.set_model(model)
 
+    @property
+    def is_offline(self):
+        return self.offline.get_active()
+
+    def set_offline(self, offline: bool):
+        self.offline.set_active(offline)
+        self.offline.set_sensitive(False)
+
     def show(self, win):
         self.present(win)
         self._loop.run()
 
     def set_problems(self, prob: list):
-        self.problems.set_title("\n".join(prob))
+        self.problems.set_text("\n".join(prob))
         self.prob_grp.set_visible(True)
 
     def show_result(self, result_dict):
+        self.set_follows_content_size(False)
+        self.result_frame.set_visible(True)
         self.populate(result_dict)
 
+    def show_errors(self, errors) -> None:
+        errors = str(errors)
+        errors = html.escape(errors)
+        self.result_frame.set_visible(False)
+        self.offline.set_visible(False)
+        self.confirm_button.set_visible(False)
+        self.set_follows_content_size(True)
+        self.problems.set_text(errors)
+        self.prob_grp.set_visible(True)
+
     def populate(self, result_dict):
+        if not result_dict:
+            self.result_frame.set_visible(False)
+            self.confirm_button.set_visible(False)
+            return
         for key in result_dict:
             if key in ["replaced"]:
                 continue
@@ -78,6 +110,12 @@ class YumexTransactionResult(Adw.Dialog):
                 return _("Packages for updating")
             case "skipped":
                 return _("Skipped Packages")
+            case "downgrade":
+                return _("Packages for downgrading")
+            case "reinstall":
+                return _("Packages for re-installation")
+            case "distrosync":
+                return _("Packages for distribution synchronization")
             case _:
                 return action
 
@@ -112,6 +150,13 @@ class YumexTransactionResult(Adw.Dialog):
             label.set_label(obj.title)
         else:
             label.set_label(obj.pkg)
+
+    @Gtk.Template.Callback()
+    def on_copy_clicked(self, button):
+        """Copy the subtitle of self.problems to the clipboard."""
+        subtitle = self.problems.get_text()
+        clb = button.get_clipboard()
+        clb.set(subtitle)
 
 
 class ResultElem(GObject.GObject):
